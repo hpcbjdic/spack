@@ -66,6 +66,33 @@ def source_file(tmpdir, is_relocatable):
     return src
 
 
+# Mocks the Executable object returned by 'which'
+MockExe = collections.namedtuple('MockExe', ['path'])
+
+
+class MockWhichPatchelf(object):
+    def __init__(self, case):
+        self.case = case
+
+    def __call__(self, exe_name):
+        assert exe_name == 'patchelf'
+        if self.case == "which_found":
+            return MockExe('/usr/bin/patchelf')
+        else:
+            return None
+
+
+class MockInstallPatchelf(object):
+    def __init__(self, orig_install, expected_path):
+        self.orig_install = orig_install
+        self.expected_path = expected_path
+
+    def install(self, **kwargs):
+        self.orig_install(fake=True)
+        with open(self.expected_path):
+            pass
+
+
 @pytest.fixture(params=['which_found', 'installed', 'to_be_installed'])
 def expected_patchelf_path(request, mutable_database, monkeypatch):
     """Prepare the stage to tests different cases that can occur
@@ -74,14 +101,8 @@ def expected_patchelf_path(request, mutable_database, monkeypatch):
     case = request.param
 
     # Mock the which function
-    which_fn = {
-        'which_found': lambda x: collections.namedtuple(
-            '_', ['path']
-        )('/usr/bin/patchelf')
-    }
     monkeypatch.setattr(
-        spack.util.executable, 'which',
-        which_fn.setdefault(case, lambda x: None)
+        spack.util.executable, 'which', MockWhichPatchelf(case)
     )
     if case == 'which_found':
         return '/usr/bin/patchelf'
@@ -91,16 +112,12 @@ def expected_patchelf_path(request, mutable_database, monkeypatch):
     spec = spack.spec.Spec('patchelf')
     spec.concretize()
 
-    patchelf_cls = type(spec.package)
-    do_install = patchelf_cls.do_install
+    do_install = spec.package.do_install
     expected_path = os.path.join(spec.prefix.bin, 'patchelf')
+    mock_install = MockInstallPatchelf(do_install, expected_path)
+    monkeypatch.setattr(spack.package.PackageBase, 'do_install',
+                        mock_install.install)
 
-    def do_install_mock(self, **kwargs):
-        do_install(self, fake=True)
-        with open(expected_path):
-            pass
-
-    monkeypatch.setattr(patchelf_cls, 'do_install', do_install_mock)
     if case == 'installed':
         spec.package.do_install()
 
